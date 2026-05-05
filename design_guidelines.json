@@ -1,0 +1,86 @@
+{
+  "theme": "Light",
+  "archetype": "Archetype 4 (Swiss & High-Contrast)",
+  "domain": "Productivity SaaS / Task Management",
+  "mood": "Objective, Functional, Focused, Clear",
+  "color_palette": {
+    "background": "#F8F9FA",
+    "surface": "#FFFFFF",
+    "surface_glass": "rgba(255, 255, 255, 0.7)",
+    "primary": "#002FA7",
+    "primary_hover": "#00227A",
+    "text_primary": "#0A0A0A",
+    "text_secondary": "#52525B",
+    "border": "#E5E7EB",
+    "danger": "#DC2626",
+    "success": "#16A34A"
+  },
+  "typography": {
+    "fonts": {
+      "headings": "Work Sans, sans-serif",
+      "body": "IBM Plex Sans, sans-serif"
+    },
+    "hierarchy": {
+      "h1": "text-4xl sm:text-5xl font-black tracking-tighter text-slate-900",
+      "h2": "text-2xl sm:text-3xl font-bold tracking-tight text-slate-900",
+      "h3": "text-xl sm:text-2xl font-semibold tracking-tight text-slate-800",
+      "h4": "text-lg sm:text-xl font-medium tracking-tight text-slate-800",
+      "body": "text-base font-normal leading-relaxed text-slate-700",
+      "small": "text-sm font-medium tracking-wide text-slate-500",
+      "overline": "text-xs font-bold uppercase tracking-[0.2em] text-slate-500"
+    }
+  },
+  "layout_spacing": {
+    "general_rule": "Generous Spacing Philosophy. Use p-6, p-8 for containers. Tight grid gaps for dashboard metrics.",
+    "three_pane_structure": {
+      "left_sidebar": "w-64 or w-72 flex-shrink-0 border-r border-slate-200 bg-white hidden md:flex flex-col h-screen",
+      "central_pane": "flex-1 flex flex-col h-screen relative bg-slate-50 overflow-hidden",
+      "right_pane": "w-80 or w-96 flex-shrink-0 border-l border-slate-200 bg-white hidden lg:flex flex-col h-screen shadow-[-4px_0_24px_rgba(0,0,0,0.02)]"
+    },
+    "containers": {
+      "dashboard_card": "bg-white border border-slate-200 p-4 sm:p-6 rounded-none",
+      "glass_surface": "backdrop-blur-xl bg-white/70 border-b border-white/40 shadow-sm backdrop-saturate-150",
+      "task_row": "flex items-center gap-3 p-3 sm:p-4 hover:bg-slate-50 border-b border-slate-100 transition-colors group cursor-pointer"
+    }
+  },
+  "motion_interactions": {
+    "hover_states": "Strict text contrast on hover (e.g., hover:bg-slate-900 hover:text-white). Icons darken on hover.",
+    "focus_states": "focus:ring-2 focus:ring-primary focus:outline-none focus-visible:ring-offset-2",
+    "animations": "Use Framer Motion for right panel slide-in, task completion (strikethrough and fade), and AI assistant panel toggling."
+  },
+  "components_strategy": {
+    "buttons": "Flat, sharp edges or max 4px radius. Primary buttons: bg-primary text-white hover:bg-primary-hover. Secondary: border border-slate-200 bg-white hover:bg-slate-50 text-slate-900.",
+    "inputs": "Shadcn UI inputs. 1px solid border, focus:ring-2. No soft drop shadows.",
+    "dialogs_modals": "Shadcn UI dialogs with backdrop-blur-sm on the overlay.",
+    "icons": "Use Phosphor Icons (@phosphor-icons/react) for dense, professional interface. Fallback to Lucide React."
+  },
+  "media": {
+    "landing_hero": {
+      "url": "https://images.unsplash.com/photo-1610902954914-a74e5e35acef?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1OTN8MHwxfHNlYXJjaHwyfHxtaW5pbWFsaXN0JTIwY2xlYW4lMjBkZXNrJTIwd29ya3NwYWNlJTIwbW9ybmluZ3xlbnwwfHx8fDE3Nzc2Nzc5NTd8MA&ixlib=rb-4.1.0&q=85",
+      "description": "Minimalist clean desk workspace for landing page hero image"
+    },
+    "bg_theme_pastel": {
+      "url": "https://images.unsplash.com/photo-1763615445790-64c644be359b?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzNTl8MHwxfHNlYXJjaHwxfHxhYnN0cmFjdCUyMHBhc3RlbCUyMGdyYWRpZW50JTIwYmFja2dyb3VuZHxlbnwwfHx8fDE3Nzc2Nzc5NTd8MA&ixlib=rb-4.1.0&q=85",
+      "description": "Flowing waves of pink and blue colors for 'My Day' list background"
+    },
+    "bg_theme_nature": {
+      "url": "https://images.unsplash.com/photo-1759313628976-7d8a5dc9db61?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1ODh8MHwxfHNlYXJjaHwxfHxzZXJlbmUlMjBtaXN0eSUyMG1vdW50YWluJTIwbGFuZHNjYXBlJTIwbmF0dXJlfGVufDB8fHx8MTc3NzY3Nzk1N3ww&ixlib=rb-4.1.0&q=85",
+      "description": "Serene misty mountain background for 'Planned' list theme"
+    },
+    "bg_theme_blur": {
+      "url": "https://images.unsplash.com/photo-1730782348712-ee40204549dc?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzNTl8MHwxfHNlYXJjaHwzfHxhYnN0cmFjdCUyMHBhc3RlbCUyMGdyYWRpZW50JTIwYmFja2dyb3VuZHxlbnwwfHx8fDE3Nzc2Nzc5NTd8MA&ixlib=rb-4.1.0&q=85",
+      "description": "Blurry blue and green background for 'Important' list theme"
+    }
+  },
+  "specific_instructions_for_main_agent": [
+    "Install and use `@phosphor-icons/react` for all icons.",
+    "Implement the three-pane layout: Sidebar (Lists), Center (Tasks), Right (Task Details / AI Panel).",
+    "The center pane must support a background image (like MS To Do) customizable per list. When an image is active, ensure task rows use 'glass_surface' styling (backdrop-blur, white/70) so text remains readable.",
+    "The UI language must be Turkish (Bugün, Önemli, Planlandı, Tümü, Tamamlandı).",
+    "Do not use generic 'Inter' font for headings; use 'Work Sans' for headings and 'IBM Plex Sans' for body.",
+    "Add an AI Assistant Panel either integrated into the Right Pane or sliding out, styled with the 'Tracing Beam' or subtle gradient border concept to signify 'AI active'.",
+    "All interactive elements MUST include a `data-testid` attribute (e.g., `data-testid='task-checkbox'`).",
+    "Avoid card overuse: main task lists should feel like rows in a seamless list, separated by 1px borders, rather than distinct 'cards'.",
+    "Ensure accessible contrast ratios, especially when tasks overlap the background image themes."
+  ]
+}

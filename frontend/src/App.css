@@ -1,0 +1,272 @@
+/* App-specific styles */
+.App {
+  min-height: 100vh;
+}
+
+.task-strike {
+  text-decoration: line-through;
+  color: #94a3b8;
+}
+
+.ai-glow {
+  background: linear-gradient(
+    90deg,
+    rgba(0, 47, 167, 0.06),
+    rgba(124, 58, 237, 0.04)
+  );
+}
+
+/* Smooth UI basics */
+button,
+input,
+textarea,
+select {
+  font-family: inherit;
+}
+
+img {
+  max-width: 100%;
+}
+
+/* Scrollbar */
+.scroll-area::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.scroll-area::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.scroll-area::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.45);
+  border-radius: 999px;
+}
+
+.scroll-area::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 0.65);
+}
+
+/* Sneezy Dark Theme */
+.dark body,
+.dark .App {
+  background: #0f172a !important;
+  color: #e5e7eb !important;
+}
+
+.dark .bg-white {
+  background-color: #111827 !important;
+}
+
+.dark .bg-slate-50,
+.dark .bg-\[\#F8F9FA\],
+.dark .bg-\[\#f5f6f8\],
+.dark .bg-\[\#f6f7fb\] {
+  background-color: #0f172a !important;
+}
+
+.dark .bg-slate-100 {
+  background-color: #1f2937 !important;
+}
+
+.dark .bg-slate-950 {
+  background-color: #020617 !important;
+}
+
+.dark .bg-red-50 {
+  background-color: rgba(127, 29, 29, 0.25) !important;
+}
+
+.dark .bg-blue-50 {
+  background-color: rgba(30, 64, 175, 0.22) !important;
+}
+
+.dark .bg-emerald-50 {
+  background-color: rgba(6, 95, 70, 0.22) !important;
+}
+
+.dark .bg-violet-50 {
+  background-color: rgba(91, 33, 182, 0.22) !important;
+}
+
+.dark .hover\:bg-slate-50:hover {
+  background-color: #1f2937 !important;
+}
+
+.dark .hover\:bg-slate-100:hover {
+  background-color: #273449 !important;
+}
+
+.dark .hover\:bg-red-50:hover {
+  background-color: rgba(127, 29, 29, 0.35) !important;
+}
+
+.dark .text-slate-950,
+.dark .text-slate-900,
+.dark .text-slate-800,
+.dark .text-slate-700 {
+  color: #f8fafc !important;
+}
+
+.dark .text-slate-600,
+.dark .text-slate-500 {
+  color: #cbd5e1 !important;
+}
+
+.dark .text-slate-400 {
+  color: #94a3b8 !important;
+}
+
+.dark .text-red-700,
+.dark .text-red-600 {
+  color: #f87171 !important;
+}
+
+.dark .text-emerald-700,
+.dark .text-emerald-600 {
+  color: #34d399 !important;
+}
+
+.dark .text-violet-700,
+.dark .text-violet-600 {
+  color: #c4b5fd !important;
+}
+
+.dark .border-slate-100,
+.dark .border-slate-200,
+.dark .border-slate-300 {
+  border-color: #334155 !important;
+}
+
+.dark .border-red-100,
+.dark .border-red-200 {
+  border-color: rgba(248, 113, 113, 0.35) !important;
+}
+
+.dark .border-blue-100,
+.dark .border-blue-200 {
+  border-color: rgba(96, 165, 250, 0.35) !important;
+}
+
+.dark .border-emerald-100,
+.dark .border-emerald-200 {
+  border-color: rgba(52, 211, 153, 0.35) !important;
+}
+
+.dark .border-violet-100,
+.dark .border-violet-200 {
+  border-color: rgba(196, 181, 253, 0.35) !important;
+}
+
+.dark input,
+.dark textarea,
+.dark select {
+  background-color: #0f172a !important;
+  color: #f8fafc !important;
+  border-color: #334155 !important;
+}
+
+.dark input::placeholder,
+.dark textarea::placeholder {
+  color: #94a3b8 !important;
+}
+
+.dark .glass-row {
+  background: rgba(15, 23, 42, 0.74) !important;
+}
+
+.dark .glass-row:hover {
+  background: rgba(30, 41, 59, 0.86) !important;
+}
+
+.dark .ai-glow {
+  background: linear-gradient(
+    135deg,
+    rgba(59, 130, 246, 0.16),
+    rgba(124, 58, 237, 0.14)
+  ) !important;
+  border-color: rgba(59, 130, 246, 0.28) !important;
+}
+
+/* Dark mode shadows */
+.dark .shadow-\[0_30px_100px_rgba\(15\,23\,42\,0\.28\)\],
+.dark .shadow-\[0_30px_100px_rgba\(15\,23\,42\,0\.13\)\],
+.dark .shadow-\[0_30px_80px_rgba\(15\,23\,42\,0\.25\)\],
+.dark .shadow-\[0_24px_60px_rgba\(15\,23\,42\,0\.08\)\],
+.dark .shadow-\[0_20px_50px_rgba\(15\,23\,42\,0\.15\)\],
+.dark .shadow-\[-4px_0_24px_rgba\(0\,0\,0\,0\.02\)\] {
+  box-shadow: 0 30px 100px rgba(0, 0, 0, 0.48) !important;
+}
+
+/* Login page dark mode */
+.dark .fixed.top-5.right-5 {
+  background-color: rgba(15, 23, 42, 0.92) !important;
+  border-color: #334155 !important;
+  color: #e5e7eb !important;
+}
+
+.dark .fixed.top-5.right-5:hover {
+  background-color: #1f2937 !important;
+}
+
+/* Dialog and floating panels */
+.dark [role="dialog"],
+.dark [data-radix-popper-content-wrapper] {
+  color: #f8fafc !important;
+}
+
+/* Product suggestion dropdown */
+.dark .absolute.left-0.right-0.top-\[42px\] {
+  background-color: #111827 !important;
+  border-color: #334155 !important;
+}
+
+/* Task move list picker */
+.dark .mx-4.mb-2.border {
+  background-color: #111827 !important;
+  border-color: #334155 !important;
+}
+
+/* Image slider controls */
+.dark .bg-white\/95,
+.dark .bg-white\/90 {
+  background-color: rgba(15, 23, 42, 0.92) !important;
+  color: #f8fafc !important;
+  border-color: #334155 !important;
+}
+
+/* Mobile improvements */
+@media (max-width: 768px) {
+  .App {
+    overflow-x: hidden;
+  }
+
+  aside[data-testid="sidebar"] {
+    width: 100%;
+  }
+
+  aside[data-testid="task-detail"] {
+    width: 100%;
+    max-width: 100%;
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+  }
+
+  .scroll-area {
+    -webkit-overflow-scrolling: touch;
+  }
+
+  button,
+  input,
+  select,
+  textarea {
+    font-size: 16px;
+  }
+}
+
+/* Prevent long codes from breaking layouts */
+.break-anywhere {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}

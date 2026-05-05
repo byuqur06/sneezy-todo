@@ -1,0 +1,123 @@
+@import url('https://fonts.googleapis.com/css2?family=Work+Sans:wght@300;400;500;600;700;800;900&family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  @apply bg-blue-500;
+}
+
+body {
+    margin: 0;
+    font-family: 'IBM Plex Sans', sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    background: #F8F9FA;
+    color: #0A0A0A;
+}
+
+h1, h2, h3, h4, h5, h6, .font-display {
+    font-family: 'Work Sans', sans-serif;
+    letter-spacing: -0.02em;
+}
+
+@layer base {
+    :root {
+        --background: 210 17% 98%;
+        --foreground: 0 0% 4%;
+        --card: 0 0% 100%;
+        --card-foreground: 0 0% 4%;
+        --popover: 0 0% 100%;
+        --popover-foreground: 0 0% 4%;
+        --primary: 224 100% 33%;
+        --primary-foreground: 0 0% 100%;
+        --secondary: 210 17% 95%;
+        --secondary-foreground: 0 0% 9%;
+        --muted: 210 17% 96%;
+        --muted-foreground: 240 5% 35%;
+        --accent: 210 17% 95%;
+        --accent-foreground: 0 0% 9%;
+        --destructive: 0 73% 50%;
+        --destructive-foreground: 0 0% 98%;
+        --border: 220 13% 91%;
+        --input: 220 13% 91%;
+        --ring: 224 100% 33%;
+        --radius: 0.375rem;
+    }
+
+    * {
+        @apply border-border;
+    }
+
+    body {
+        @apply bg-background text-foreground;
+    }
+}
+
+/* Custom backgrounds for lists */
+.bg-theme-pastel {
+    background-image: linear-gradient(rgba(255,255,255,0.55), rgba(255,255,255,0.55)),
+        url('https://images.unsplash.com/photo-1763615445790-64c644be359b?crop=entropy&cs=srgb&fm=jpg&w=2000&q=70');
+    background-size: cover;
+    background-position: center;
+}
+
+.bg-theme-nature {
+    background-image: linear-gradient(rgba(255,255,255,0.55), rgba(255,255,255,0.55)),
+        url('https://images.unsplash.com/photo-1759313628976-7d8a5dc9db61?crop=entropy&cs=srgb&fm=jpg&w=2000&q=70');
+    background-size: cover;
+    background-position: center;
+}
+
+.bg-theme-blur {
+    background-image: linear-gradient(rgba(255,255,255,0.55), rgba(255,255,255,0.55)),
+        url('https://images.unsplash.com/photo-1730782348712-ee40204549dc?crop=entropy&cs=srgb&fm=jpg&w=2000&q=70');
+    background-size: cover;
+    background-position: center;
+}
+
+.glass-row {
+    backdrop-filter: blur(14px) saturate(150%);
+    background: rgba(255, 255, 255, 0.72);
+}
+
+.scroll-area::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+.scroll-area::-webkit-scrollbar-thumb {
+    background: rgba(0,0,0,0.12);
+    border-radius: 4px;
+}
+
+.scroll-area::-webkit-scrollbar-thumb:hover {
+    background: rgba(0,0,0,0.22);
+}
+
+.task-strike {
+    text-decoration: line-through;
+    color: #94a3b8;
+}
+
+.shimmer {
+    background: linear-gradient(90deg, #f1f5f9 0%, #e2e8f0 50%, #f1f5f9 100%);
+    background-size: 200% 100%;
+    animation: shimmer 1.4s infinite;
+}
+
+@keyframes shimmer {
+    0% {
+        background-position: 200% 0;
+    }
+
+    100% {
+        background-position: -200% 0;
+    }
+}
+
+.ai-glow {
+    background: linear-gradient(135deg, rgba(0,47,167,0.06), rgba(124,58,237,0.06));
+    border: 1px solid rgba(0,47,167,0.18);
+}
