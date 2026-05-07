@@ -393,7 +393,12 @@ async def logout(request: Request, response: Response):
     if token:
         await db.user_sessions.delete_one({"session_token": token})
 
-    response.delete_cookie("session_token", path="/")
+    response.delete_cookie(
+    key="session_token",
+    path="/",
+    secure=COOKIE_SECURE,
+    samesite="none" if COOKIE_SECURE else "lax",
+)
 
     return {"ok": True}
 
