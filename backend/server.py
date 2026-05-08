@@ -5,6 +5,7 @@ from typing import Optional, List, Any, Dict
 import base64
 import hashlib
 import os
+import re
 import secrets
 import uuid
 
@@ -36,6 +37,19 @@ def now_iso() -> str:
 
 def create_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:12]}"
+
+
+def clean_search(value: str, max_length: int = 80) -> str:
+    return str(value or "").strip()[:max_length]
+
+
+def safe_regex(value: str) -> str:
+    return re.escape(clean_search(value))
+
+
+def chunked(items: List[Any], size: int = 1000):
+    for index in range(0, len(items), size):
+        yield items[index:index + size]
 
 
 def normalize_role(role: Optional[str]) -> str:
@@ -122,6 +136,27 @@ async def ensure_default_admin() -> None:
         })
 
 
+async def ensure_indexes() -> None:
+    try:
+        await db.users.create_index("username")
+        await db.user_sessions.create_index("session_token")
+        await db.user_sessions.create_index("expires_at")
+        await db.task_lists.create_index("order")
+        await db.tasks.create_index("task_id")
+        await db.tasks.create_index("list_id")
+        await db.tasks.create_index([("completed", 1), ("order", 1), ("created_at", -1)])
+        await db.tasks.create_index("stock_code")
+        await db.tasks.create_index("barcode")
+        await db.product_data.create_index("stock_code")
+        await db.product_data.create_index("barcode")
+        await db.product_data.create_index("main_stock_code")
+        await db.product_data.create_index("variant_id")
+        await db.product_data.create_index("product_id")
+    except Exception:
+        # Index creation should improve speed, but startup must not fail if Atlas delays it.
+        pass
+
+
 async def get_current_user(request: Request) -> Dict[str, Any]:
     token = request.cookies.get("session_token")
 
@@ -175,6 +210,7 @@ def require_admin(user: Dict[str, Any]) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await ensure_default_admin()
+    await ensure_indexes()
     yield
     client.close()
 
@@ -232,6 +268,15 @@ class TaskListUpdate(BaseModel):
     color: Optional[str] = None
     theme_bg: Optional[str] = None
     order: Optional[int] = None
+
+
+class TaskListOrderItem(BaseModel):
+    list_id: str
+    order: int
+
+
+class TaskListReorder(BaseModel):
+    items: List[TaskListOrderItem]
 
 
 class Step(BaseModel):
@@ -305,6 +350,88 @@ class TaskUpdate(BaseModel):
 
 class ProductDataImport(BaseModel):
     products: List[Dict[str, Any]]
+
+
+class TaskBulkCreate(BaseModel):
+    tasks: List[TaskCreate]
+
+
+class TaskBulkUpdate(BaseModel):
+    task_ids: List[str]
+    updates: TaskUpdate
+
+
+class TaskBulkDelete(BaseModel):
+    task_ids: List[str]
+
+
+class ProductBatchFind(BaseModel):
+    items: List[Dict[str, Any]]
+
+
+def task_doc_from_payload(payload: TaskCreate, order: int) -> Dict[str, Any]:
+    quantity = payload.quantity if payload.quantity is not None else 1
+
+    return {
+        "task_id": create_id("task"),
+        "list_id": payload.list_id,
+        "title": payload.title,
+        "notes": payload.notes or "",
+        "completed": bool(payload.completed),
+        "important": bool(payload.important),
+        "my_day": bool(payload.my_day),
+        "due_date": payload.due_date,
+        "reminder_at": payload.reminder_at,
+        "recurrence": payload.recurrence or "none",
+        "tags": payload.tags or [],
+        "steps": [
+            step.model_dump() if hasattr(step, "model_dump") else step
+            for step in (payload.steps or [])
+        ],
+        "order": order,
+
+        "barcode": payload.barcode or "",
+        "stock_code": payload.stock_code or "",
+        "quantity": quantity,
+        "initial_quantity": payload.initial_quantity or quantity,
+
+        "product_name": payload.product_name or "",
+        "variant_name": payload.variant_name or "",
+        "variant_id": payload.variant_id or "",
+        "product_id": payload.product_id or "",
+
+        "image_url": payload.image_url or "",
+        "image_urls": payload.image_urls or [],
+
+        "matched": payload.matched,
+        "match_code": payload.match_code or "",
+        "source": payload.source or "manual",
+
+        "created_at": now_iso(),
+        "updated_at": now_iso(),
+        "completed_at": now_iso() if payload.completed else None,
+    }
+
+
+def task_updates_from_payload(payload: TaskUpdate) -> Dict[str, Any]:
+    updates = {
+        key: value
+        for key, value in payload.model_dump(exclude_unset=True).items()
+    }
+
+    if "steps" in updates and updates["steps"] is not None:
+        updates["steps"] = [
+            step if isinstance(step, dict) else step.model_dump()
+            for step in updates["steps"]
+        ]
+
+    if "completed" in updates:
+        updates["completed_at"] = now_iso() if updates["completed"] else None
+
+    if updates:
+        updates["updated_at"] = now_iso()
+
+    return updates
 
 
 @api_router.get("/")
@@ -572,6 +699,31 @@ async def create_list(payload: TaskListCreate, request: Request):
     return doc
 
 
+@api_router.post("/lists/reorder")
+async def reorder_lists(payload: TaskListReorder, request: Request):
+    await get_current_user(request)
+
+    items = payload.items or []
+
+    if not items:
+        return {"ok": True}
+
+    updated_at = now_iso()
+
+    for item in items:
+        await db.task_lists.update_one(
+            {"list_id": item.list_id},
+            {
+                "$set": {
+                    "order": item.order,
+                    "updated_at": updated_at,
+                }
+            },
+        )
+
+    return {"ok": True}
+
+
 @api_router.patch("/lists/{list_id}")
 async def update_list(list_id: str, payload: TaskListUpdate, request: Request):
     await get_current_user(request)
@@ -650,12 +802,13 @@ async def list_tasks(
         query["matched"] = False
 
     if q:
+        search = safe_regex(q)
         query["$or"] = [
-            {"title": {"$regex": q, "$options": "i"}},
-            {"stock_code": {"$regex": q, "$options": "i"}},
-            {"barcode": {"$regex": q, "$options": "i"}},
-            {"product_name": {"$regex": q, "$options": "i"}},
-            {"variant_name": {"$regex": q, "$options": "i"}},
+            {"title": {"$regex": search, "$options": "i"}},
+            {"stock_code": {"$regex": search, "$options": "i"}},
+            {"barcode": {"$regex": search, "$options": "i"}},
+            {"product_name": {"$regex": search, "$options": "i"}},
+            {"variant_name": {"$regex": search, "$options": "i"}},
         ]
 
     items = await db.tasks.find(
@@ -675,75 +828,82 @@ async def create_task(payload: TaskCreate, request: Request):
     await get_current_user(request)
 
     count = await db.tasks.count_documents({"list_id": payload.list_id})
-    quantity = payload.quantity if payload.quantity is not None else 1
-
-    doc = {
-        "task_id": create_id("task"),
-        "list_id": payload.list_id,
-        "title": payload.title,
-        "notes": payload.notes or "",
-        "completed": bool(payload.completed),
-        "important": bool(payload.important),
-        "my_day": bool(payload.my_day),
-        "due_date": payload.due_date,
-        "reminder_at": payload.reminder_at,
-        "recurrence": payload.recurrence or "none",
-        "tags": payload.tags or [],
-        "steps": [
-            step.model_dump() if hasattr(step, "model_dump") else step
-            for step in (payload.steps or [])
-        ],
-        "order": count,
-
-        "barcode": payload.barcode or "",
-        "stock_code": payload.stock_code or "",
-        "quantity": quantity,
-        "initial_quantity": payload.initial_quantity or quantity,
-
-        "product_name": payload.product_name or "",
-        "variant_name": payload.variant_name or "",
-        "variant_id": payload.variant_id or "",
-        "product_id": payload.product_id or "",
-
-        "image_url": payload.image_url or "",
-        "image_urls": payload.image_urls or [],
-
-        "matched": payload.matched,
-        "match_code": payload.match_code or "",
-        "source": payload.source or "manual",
-
-        "created_at": now_iso(),
-        "updated_at": now_iso(),
-        "completed_at": now_iso() if payload.completed else None,
-    }
+    doc = task_doc_from_payload(payload, count)
 
     await db.tasks.insert_one(doc.copy())
 
     return doc
 
 
-@api_router.patch("/tasks/{task_id}")
-async def update_task(task_id: str, payload: TaskUpdate, request: Request):
+@api_router.post("/tasks/bulk-create")
+async def bulk_create_tasks(payload: TaskBulkCreate, request: Request):
     await get_current_user(request)
 
-    updates = {
-        key: value
-        for key, value in payload.model_dump(exclude_unset=True).items()
-    }
+    source_tasks = payload.tasks or []
 
-    if "steps" in updates and updates["steps"] is not None:
-        updates["steps"] = [
-            step if isinstance(step, dict) else step.model_dump()
-            for step in updates["steps"]
-        ]
+    if not source_tasks:
+        return []
 
-    if "completed" in updates:
-        updates["completed_at"] = now_iso() if updates["completed"] else None
+    if len(source_tasks) > 5000:
+        raise HTTPException(status_code=400, detail="Tek seferde en fazla 5000 görev eklenebilir")
+
+    list_ids = set(task.list_id for task in source_tasks)
+    order_by_list = {}
+
+    for list_id in list_ids:
+        order_by_list[list_id] = await db.tasks.count_documents({"list_id": list_id})
+
+    docs = []
+
+    for task in source_tasks:
+        order = order_by_list.get(task.list_id, 0)
+        docs.append(task_doc_from_payload(task, order))
+        order_by_list[task.list_id] = order + 1
+
+    for batch in chunked(docs, 1000):
+        await db.tasks.insert_many([doc.copy() for doc in batch])
+
+    return docs
+
+
+@api_router.patch("/tasks/bulk-update")
+async def bulk_update_tasks(payload: TaskBulkUpdate, request: Request):
+    await get_current_user(request)
+
+    task_ids = list(dict.fromkeys(str(task_id) for task_id in (payload.task_ids or []) if task_id))
+
+    if not task_ids:
+        raise HTTPException(status_code=400, detail="Güncellenecek görev seçilmedi")
+
+    if len(task_ids) > 5000:
+        raise HTTPException(status_code=400, detail="Tek seferde en fazla 5000 görev güncellenebilir")
+
+    updates = task_updates_from_payload(payload.updates)
 
     if not updates:
         raise HTTPException(status_code=400, detail="Güncellenecek alan yok")
 
-    updates["updated_at"] = now_iso()
+    await db.tasks.update_many(
+        {"task_id": {"$in": task_ids}},
+        {"$set": updates},
+    )
+
+    items = await db.tasks.find(
+        {"task_id": {"$in": task_ids}},
+        {"_id": 0},
+    ).to_list(len(task_ids))
+
+    return items
+
+
+@api_router.patch("/tasks/{task_id}")
+async def update_task(task_id: str, payload: TaskUpdate, request: Request):
+    await get_current_user(request)
+
+    updates = task_updates_from_payload(payload)
+
+    if not updates:
+        raise HTTPException(status_code=400, detail="Güncellenecek alan yok")
 
     result = await db.tasks.update_one(
         {"task_id": task_id},
@@ -756,6 +916,26 @@ async def update_task(task_id: str, payload: TaskUpdate, request: Request):
     item = await db.tasks.find_one({"task_id": task_id}, {"_id": 0})
 
     return item
+
+
+@api_router.post("/tasks/bulk-delete")
+async def bulk_delete_tasks(payload: TaskBulkDelete, request: Request):
+    await get_current_user(request)
+
+    task_ids = list(dict.fromkeys(str(task_id) for task_id in (payload.task_ids or []) if task_id))
+
+    if not task_ids:
+        raise HTTPException(status_code=400, detail="Silinecek görev seçilmedi")
+
+    if len(task_ids) > 5000:
+        raise HTTPException(status_code=400, detail="Tek seferde en fazla 5000 görev silinebilir")
+
+    result = await db.tasks.delete_many({"task_id": {"$in": task_ids}})
+
+    return {
+        "ok": True,
+        "deleted_count": result.deleted_count,
+    }
 
 
 @api_router.delete("/tasks/{task_id}")
@@ -799,8 +979,8 @@ async def import_product_data(payload: ProductDataImport, request: Request):
         }
         docs.append(doc)
 
-    if docs:
-        await db.product_data.insert_many(docs)
+    for batch in chunked(docs, 1000):
+        await db.product_data.insert_many(batch)
 
     updated_at = datetime.now().strftime("%d.%m.%Y %H:%M")
 
@@ -831,7 +1011,7 @@ async def search_product_data(
 ):
     await get_current_user(request)
 
-    search = q.strip()
+    search = safe_regex(q)
 
     if not search:
         return []
@@ -846,9 +1026,83 @@ async def search_product_data(
         ]
     }
 
-    items = await db.product_data.find(query, {"_id": 0}).limit(limit).to_list(limit)
+    safe_limit = min(max(int(limit or 15), 1), 100)
+    items = await db.product_data.find(query, {"_id": 0}).limit(safe_limit).to_list(safe_limit)
 
     return items
+
+
+@api_router.post("/product-data/batch-find")
+async def batch_find_product_data(payload: ProductBatchFind, request: Request):
+    await get_current_user(request)
+
+    source_items = payload.items or []
+
+    if not source_items:
+        return {}
+
+    if len(source_items) > 5000:
+        raise HTTPException(status_code=400, detail="Tek seferde en fazla 5000 satır eşleştirilebilir")
+
+    values = []
+
+    for item in source_items:
+        values.extend([
+            clean_search(item.get("stock_code")),
+            clean_search(item.get("barcode")),
+            clean_search(item.get("variant_id")),
+            clean_search(item.get("product_id")),
+        ])
+
+    values = list(dict.fromkeys(value for value in values if value))
+
+    if not values:
+        return {}
+
+    query = {
+        "$or": [
+            {"stock_code": {"$in": values}},
+            {"barcode": {"$in": values}},
+            {"variant_id": {"$in": values}},
+            {"product_id": {"$in": values}},
+            {"main_stock_code": {"$in": values}},
+        ]
+    }
+
+    products = await db.product_data.find(
+        query,
+        {"_id": 0},
+    ).limit(min(len(values) * 3, 15000)).to_list(min(len(values) * 3, 15000))
+
+    lookup: Dict[str, Dict[str, Any]] = {}
+
+    for product in products:
+        for field in ["stock_code", "barcode", "variant_id", "product_id", "main_stock_code"]:
+            value = clean_search(product.get(field))
+            if value and value not in lookup:
+                lookup[value] = product
+
+    result: Dict[str, Any] = {}
+
+    for item in source_items:
+        key = clean_search(item.get("key"))
+        search_values = [
+            clean_search(item.get("stock_code")),
+            clean_search(item.get("barcode")),
+            clean_search(item.get("variant_id")),
+            clean_search(item.get("product_id")),
+        ]
+        product = None
+
+        for value in search_values:
+            if value and value in lookup:
+                product = lookup[value]
+                break
+
+        if key:
+            result[key] = product
+
+    return result
 
 
 @api_router.delete("/product-data")
