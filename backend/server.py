@@ -52,6 +52,62 @@ def chunked(items: List[Any], size: int = 1000):
         yield items[index:index + size]
 
 
+TASK_SUMMARY_PROJECTION = {
+    "_id": 0,
+    "task_id": 1,
+    "list_id": 1,
+    "title": 1,
+    "notes": 1,
+    "completed": 1,
+    "important": 1,
+    "my_day": 1,
+    "due_date": 1,
+    "recurrence": 1,
+    "steps": 1,
+    "order": 1,
+    "barcode": 1,
+    "stock_code": 1,
+    "quantity": 1,
+    "initial_quantity": 1,
+    "product_name": 1,
+    "variant_name": 1,
+    "variant_id": 1,
+    "product_id": 1,
+    "image_url": 1,
+    "matched": 1,
+    "match_code": 1,
+    "source": 1,
+    "created_at": 1,
+    "updated_at": 1,
+    "completed_at": 1,
+}
+
+PRODUCT_RESULT_PROJECTION = {
+    "_id": 0,
+    "id": 1,
+    "product_id": 1,
+    "variant_id": 1,
+    "stock_code": 1,
+    "main_stock_code": 1,
+    "product_name": 1,
+    "barcode": 1,
+    "stock_quantity": 1,
+    "variant_name": 1,
+    "variant_option_1": 1,
+    "variant_option_2": 1,
+    "image_url": 1,
+    "image_urls": 1,
+}
+
+PRODUCT_MATCH_FIELDS = [
+    "stock_code",
+    "barcode",
+    "main_stock_code",
+    "variant_id",
+    "product_id",
+]
+
+
 def normalize_role(role: Optional[str]) -> str:
     value = str(role or "").strip().lower()
 
@@ -144,6 +200,7 @@ async def ensure_indexes() -> None:
         await db.task_lists.create_index("order")
         await db.tasks.create_index("task_id")
         await db.tasks.create_index("list_id")
+        await db.tasks.create_index([("list_id", 1), ("completed", 1), ("order", 1)])
         await db.tasks.create_index([("completed", 1), ("order", 1), ("created_at", -1)])
         await db.tasks.create_index("stock_code")
         await db.tasks.create_index("barcode")
@@ -152,6 +209,7 @@ async def ensure_indexes() -> None:
         await db.product_data.create_index("main_stock_code")
         await db.product_data.create_index("variant_id")
         await db.product_data.create_index("product_id")
+        await db.product_data.create_index([("search_text", "text")])
     except Exception:
         # Index creation should improve speed, but startup must not fail if Atlas delays it.
         pass
@@ -365,6 +423,10 @@ class TaskBulkDelete(BaseModel):
     task_ids: List[str]
 
 
+class TaskBulkGet(BaseModel):
+    task_ids: List[str]
+
+
 class ProductBatchFind(BaseModel):
     items: List[Dict[str, Any]]
 
@@ -432,6 +494,52 @@ def task_updates_from_payload(payload: TaskUpdate) -> Dict[str, Any]:
         updates["updated_at"] = now_iso()
 
     return updates
+
+
+def product_match_query(values: List[str]) -> Dict[str, Any]:
+    safe_values = list(dict.fromkeys(clean_search(value) for value in values if clean_search(value)))
+
+    if not safe_values:
+        return {}
+
+    return {
+        "$or": [
+            {field: {"$in": safe_values}}
+            for field in PRODUCT_MATCH_FIELDS
+        ]
+    }
+
+
+def product_prefix_query(search: str) -> Dict[str, Any]:
+    escaped = safe_regex(search)
+
+    if not escaped:
+        return {}
+
+    return {
+        "$or": [
+            {field: {"$regex": f"^{escaped}"}}
+            for field in PRODUCT_MATCH_FIELDS
+        ]
+    }
+
+
+def product_fuzzy_query(search: str) -> Dict[str, Any]:
+    escaped = safe_regex(search)
+
+    if not escaped:
+        return {}
+
+    return {
+        "$or": [
+            {"search_text": {"$regex": escaped, "$options": "i"}},
+            {"product_name": {"$regex": escaped, "$options": "i"}},
+            {"variant_name": {"$regex": escaped, "$options": "i"}},
+            {"stock_code": {"$regex": escaped, "$options": "i"}},
+            {"barcode": {"$regex": escaped, "$options": "i"}},
+            {"main_stock_code": {"$regex": escaped, "$options": "i"}},
+        ]
+    }
 
 
 @api_router.get("/")
@@ -772,6 +880,7 @@ async def list_tasks(
     list_id: Optional[str] = None,
     smart: Optional[str] = None,
     q: Optional[str] = None,
+    summary: bool = False,
 ):
     await get_current_user(request)
 
@@ -813,7 +922,7 @@ async def list_tasks(
 
     items = await db.tasks.find(
         query,
-        {"_id": 0},
+        TASK_SUMMARY_PROJECTION if summary else {"_id": 0},
     ).sort([
         ("completed", 1),
         ("order", 1),
@@ -896,6 +1005,40 @@ async def bulk_update_tasks(payload: TaskBulkUpdate, request: Request):
     return items
 
 
+@api_router.post("/tasks/bulk-get")
+async def bulk_get_tasks(payload: TaskBulkGet, request: Request):
+    await get_current_user(request)
+
+    task_ids = list(dict.fromkeys(str(task_id) for task_id in (payload.task_ids or []) if task_id))
+
+    if not task_ids:
+        return []
+
+    if len(task_ids) > 5000:
+        raise HTTPException(status_code=400, detail="Tek seferde en fazla 5000 gÃ¶rev getirilebilir")
+
+    items = await db.tasks.find(
+        {"task_id": {"$in": task_ids}},
+        {"_id": 0},
+    ).to_list(len(task_ids))
+
+    by_id = {str(item.get("task_id")): item for item in items}
+
+    return [by_id[task_id] for task_id in task_ids if task_id in by_id]
+
+
+@api_router.get("/tasks/{task_id}")
+async def get_task(task_id: str, request: Request):
+    await get_current_user(request)
+
+    item = await db.tasks.find_one({"task_id": task_id}, {"_id": 0})
+
+    if not item:
+        raise HTTPException(status_code=404, detail="GÃ¶rev bulunamadÄ±")
+
+    return item
+
+
 @api_router.patch("/tasks/{task_id}")
 async def update_task(task_id: str, payload: TaskUpdate, request: Request):
     await get_current_user(request)
@@ -973,8 +1116,22 @@ async def import_product_data(payload: ProductDataImport, request: Request):
     docs = []
 
     for product in payload.products:
+        search_text = product.get("search_text") or " ".join(
+            str(product.get(field) or "")
+            for field in [
+                "stock_code",
+                "barcode",
+                "product_id",
+                "variant_id",
+                "product_name",
+                "main_stock_code",
+                "variant_name",
+            ]
+        ).lower()
+
         doc = {
             **product,
+            "search_text": search_text,
             "created_at": now_iso(),
         }
         docs.append(doc)
@@ -1011,25 +1168,49 @@ async def search_product_data(
 ):
     await get_current_user(request)
 
-    search = safe_regex(q)
+    search = clean_search(q)
 
     if not search:
         return []
 
-    query = {
-        "$or": [
-            {"stock_code": {"$regex": search, "$options": "i"}},
-            {"barcode": {"$regex": search, "$options": "i"}},
-            {"main_stock_code": {"$regex": search, "$options": "i"}},
-            {"product_name": {"$regex": search, "$options": "i"}},
-            {"variant_name": {"$regex": search, "$options": "i"}},
-        ]
-    }
-
     safe_limit = min(max(int(limit or 15), 1), 100)
-    items = await db.product_data.find(query, {"_id": 0}).limit(safe_limit).to_list(safe_limit)
+    seen_ids = set()
+    results: List[Dict[str, Any]] = []
 
-    return items
+    async def append_matches(query: Dict[str, Any], limit_count: int) -> None:
+        if not query or limit_count <= 0:
+            return
+
+        matches = await db.product_data.find(
+            query,
+            PRODUCT_RESULT_PROJECTION,
+        ).limit(limit_count).to_list(limit_count)
+
+        for product in matches:
+            key = (
+                product.get("id") or
+                product.get("variant_id") or
+                product.get("stock_code") or
+                product.get("barcode") or
+                product.get("product_id")
+            )
+
+            if key and key in seen_ids:
+                continue
+
+            if key:
+                seen_ids.add(key)
+
+            results.append(product)
+
+            if len(results) >= safe_limit:
+                break
+
+    await append_matches(product_match_query([search]), safe_limit)
+    await append_matches(product_prefix_query(search), safe_limit - len(results))
+    await append_matches(product_fuzzy_query(search), safe_limit - len(results))
+
+    return results[:safe_limit]
 
 
 @api_router.post("/product-data/batch-find")
@@ -1059,20 +1240,21 @@ async def batch_find_product_data(payload: ProductBatchFind, request: Request):
     if not values:
         return {}
 
-    query = {
-        "$or": [
-            {"stock_code": {"$in": values}},
-            {"barcode": {"$in": values}},
-            {"variant_id": {"$in": values}},
-            {"product_id": {"$in": values}},
-            {"main_stock_code": {"$in": values}},
-        ]
-    }
+    products: List[Dict[str, Any]] = []
 
-    products = await db.product_data.find(
-        query,
-        {"_id": 0},
-    ).limit(min(len(values) * 3, 15000)).to_list(min(len(values) * 3, 15000))
+    for value_batch in chunked(values, 1000):
+        query = product_match_query(value_batch)
+
+        if not query:
+            continue
+
+        batch_limit = min(len(value_batch) * 3, 3000)
+        batch_products = await db.product_data.find(
+            query,
+            PRODUCT_RESULT_PROJECTION,
+        ).limit(batch_limit).to_list(batch_limit)
+
+        products.extend(batch_products)
 
     lookup: Dict[str, Dict[str, Any]] = {}
 
