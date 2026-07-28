@@ -1632,7 +1632,7 @@ async def list_product_data(
     await get_current_user(request)
 
     safe_skip = max(int(skip or 0), 0)
-    safe_limit = min(max(int(limit or 100), 1), 200)
+    safe_limit = min(max(int(limit or 100), 1), 1000)
     search = clean_search(q or "", 160)
     query = product_fuzzy_query(search) if search else {}
 
