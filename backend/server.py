@@ -1638,44 +1638,16 @@ async def list_product_data(
     query = product_fuzzy_query(search) if search else {}
 
     if assigned is not None:
-        pipeline = []
-        if query:
-            pipeline.append({"$match": query})
-        pipeline.extend([
-            {
-                "$lookup": {
-                    "from": "supplier_routing_rules",
-                    "localField": "normalized_match_values",
-                    "foreignField": "normalized_stock_code",
-                    "as": "supplier_rules",
-                }
-            },
-            {
-                "$match": {
-                    "supplier_rules.0": {"$exists": bool(assigned)}
-                }
-            },
-            {"$sort": {"stock_code": 1, "product_name": 1}},
-            {
-                "$facet": {
-                    "items": [
-                        {"$skip": safe_skip},
-                        {"$limit": safe_limit},
-                        {"$project": PRODUCT_RESULT_PROJECTION},
-                    ],
-                    "meta": [{"$count": "total"}],
-                }
-            },
-        ])
-        result = await db.product_data.aggregate(pipeline).to_list(1)
-        data = result[0] if result else {"items": [], "meta": []}
-        meta = data.get("meta") or []
-        return {
-            "items": data.get("items") or [],
-            "total": meta[0].get("total", 0) if meta else 0,
-            "skip": safe_skip,
-            "limit": safe_limit,
+        assigned_codes = await db.supplier_routing_rules.distinct(
+            "normalized_stock_code",
+            {"normalized_stock_code": {"$ne": ""}},
+        )
+        assignment_query = {
+            "normalized_match_values": {
+                "$in" if assigned else "$nin": assigned_codes
+            }
         }
+        query = {"$and": [query, assignment_query]} if query else assignment_query
 
     total = await db.product_data.count_documents(query)
     items = await db.product_data.find(
