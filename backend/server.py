@@ -1626,6 +1626,7 @@ async def product_data_stats(request: Request):
 async def list_product_data(
     request: Request,
     q: Optional[str] = None,
+    assigned: Optional[bool] = None,
     skip: int = 0,
     limit: int = 100,
 ):
@@ -1635,6 +1636,46 @@ async def list_product_data(
     safe_limit = min(max(int(limit or 100), 1), 1000)
     search = clean_search(q or "", 160)
     query = product_fuzzy_query(search) if search else {}
+
+    if assigned is not None:
+        pipeline = []
+        if query:
+            pipeline.append({"$match": query})
+        pipeline.extend([
+            {
+                "$lookup": {
+                    "from": "supplier_routing_rules",
+                    "localField": "normalized_match_values",
+                    "foreignField": "normalized_stock_code",
+                    "as": "supplier_rules",
+                }
+            },
+            {
+                "$match": {
+                    "supplier_rules.0": {"$exists": bool(assigned)}
+                }
+            },
+            {"$sort": {"stock_code": 1, "product_name": 1}},
+            {
+                "$facet": {
+                    "items": [
+                        {"$skip": safe_skip},
+                        {"$limit": safe_limit},
+                        {"$project": PRODUCT_RESULT_PROJECTION},
+                    ],
+                    "meta": [{"$count": "total"}],
+                }
+            },
+        ])
+        result = await db.product_data.aggregate(pipeline).to_list(1)
+        data = result[0] if result else {"items": [], "meta": []}
+        meta = data.get("meta") or []
+        return {
+            "items": data.get("items") or [],
+            "total": meta[0].get("total", 0) if meta else 0,
+            "skip": safe_skip,
+            "limit": safe_limit,
+        }
 
     total = await db.product_data.count_documents(query)
     items = await db.product_data.find(
