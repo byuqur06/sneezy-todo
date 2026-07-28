@@ -1642,12 +1642,36 @@ async def list_product_data(
             "normalized_stock_code",
             {"normalized_stock_code": {"$ne": ""}},
         )
-        assignment_query = {
-            "normalized_match_values": {
-                "$in" if assigned else "$nin": assigned_codes
-            }
+        assigned_code_set = {
+            normalize_match_value(code)
+            for code in assigned_codes
+            if normalize_match_value(code)
         }
-        query = {"$and": [query, assignment_query]} if query else assignment_query
+        candidates = await db.product_data.find(
+            query,
+            PRODUCT_RESULT_PROJECTION,
+        ).sort([
+            ("stock_code", 1),
+            ("product_name", 1),
+        ]).to_list(50000)
+
+        filtered_items = []
+        for product in candidates:
+            product_codes = normalized_match_values_from_product(product)
+            product_is_assigned = any(
+                code in assigned_code_set
+                for code in product_codes
+            )
+            if product_is_assigned == assigned:
+                filtered_items.append(product)
+
+        total = len(filtered_items)
+        return {
+            "items": filtered_items[safe_skip:safe_skip + safe_limit],
+            "total": total,
+            "skip": safe_skip,
+            "limit": safe_limit,
+        }
 
     total = await db.product_data.count_documents(query)
     items = await db.product_data.find(
