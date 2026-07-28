@@ -15,6 +15,7 @@ from fastapi import FastAPI, APIRouter, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel
+from pymongo import ReplaceOne
 
 
 ROOT_DIR = Path(__file__).parent
@@ -515,6 +516,11 @@ class SupplierRoutingRuleUpdate(BaseModel):
     list_id: Optional[str] = None
     enabled: Optional[bool] = None
     mode: Optional[str] = None
+
+
+class SupplierRoutingBulkUpsert(BaseModel):
+    products: List[Dict[str, Any]]
+    list_id: str
 
 
 class SupplierRoutingLearn(BaseModel):
@@ -1153,6 +1159,89 @@ async def upsert_supplier_routing_rule(payload: SupplierRoutingRuleUpsert, reque
     return doc
 
 
+@api_router.post("/supplier-routing/rules/bulk")
+async def bulk_upsert_supplier_routing_rules(
+    payload: SupplierRoutingBulkUpsert,
+    request: Request,
+):
+    await get_current_user(request)
+
+    products = payload.products or []
+    if not products:
+        raise HTTPException(status_code=400, detail="Atanacak ürün seçilmedi")
+    if len(products) > 1000:
+        raise HTTPException(status_code=400, detail="Tek seferde en fazla 1000 ürün atanabilir")
+
+    target_list = await db.task_lists.find_one({"list_id": payload.list_id}, {"_id": 0})
+    if not target_list:
+        raise HTTPException(status_code=404, detail="Toptancı listesi bulunamadı")
+
+    prepared = {}
+    for product in products:
+        stock_code = (
+            product.get("stock_code")
+            or product.get("main_stock_code")
+            or product.get("marketplace_stock_code")
+            or product.get("barcode")
+            or ""
+        )
+        normalized = normalize_match_value(stock_code)
+        if normalized:
+            prepared[normalized] = {**product, "stock_code": stock_code}
+
+    if not prepared:
+        raise HTTPException(status_code=400, detail="Seçilen ürünlerde geçerli stok kodu yok")
+
+    existing_items = await db.supplier_routing_rules.find(
+        {"normalized_stock_code": {"$in": list(prepared.keys())}},
+        {"_id": 0},
+    ).to_list(len(prepared))
+    existing_by_key = {
+        item.get("normalized_stock_code"): item
+        for item in existing_items
+    }
+
+    now = now_iso()
+    operations = []
+    response_items = []
+    for normalized, product in prepared.items():
+        existing = existing_by_key.get(normalized) or {}
+        doc = {
+            "rule_id": existing.get("rule_id", create_id("route")),
+            "stock_code": clean_search(product.get("stock_code"), 160),
+            "normalized_stock_code": normalized,
+            "product_name": product.get("product_name") or existing.get("product_name", ""),
+            "image_url": (
+                product.get("image_url")
+                or (product.get("image_urls") or [""])[0]
+                or existing.get("image_url", "")
+            ),
+            "list_id": payload.list_id,
+            "mode": "fixed",
+            "enabled": True,
+            "observations": existing.get("observations", []),
+            "created_at": existing.get("created_at", now),
+            "updated_at": now,
+        }
+        operations.append(
+            ReplaceOne(
+                {"normalized_stock_code": normalized},
+                doc.copy(),
+                upsert=True,
+            )
+        )
+        response_items.append(doc)
+
+    if operations:
+        await db.supplier_routing_rules.bulk_write(operations, ordered=False)
+
+    return {
+        "ok": True,
+        "count": len(response_items),
+        "items": response_items,
+    }
+
+
 @api_router.patch("/supplier-routing/rules/{rule_id}")
 async def update_supplier_routing_rule(
     rule_id: str,
@@ -1530,6 +1619,37 @@ async def product_data_stats(request: Request):
     return {
         "count": count,
         "updated_at": meta.get("updated_at") if meta else "",
+    }
+
+
+@api_router.get("/product-data/list")
+async def list_product_data(
+    request: Request,
+    q: Optional[str] = None,
+    skip: int = 0,
+    limit: int = 100,
+):
+    await get_current_user(request)
+
+    safe_skip = max(int(skip or 0), 0)
+    safe_limit = min(max(int(limit or 100), 1), 200)
+    search = clean_search(q or "", 160)
+    query = product_fuzzy_query(search) if search else {}
+
+    total = await db.product_data.count_documents(query)
+    items = await db.product_data.find(
+        query,
+        PRODUCT_RESULT_PROJECTION,
+    ).sort([
+        ("stock_code", 1),
+        ("product_name", 1),
+    ]).skip(safe_skip).limit(safe_limit).to_list(safe_limit)
+
+    return {
+        "items": items,
+        "total": total,
+        "skip": safe_skip,
+        "limit": safe_limit,
     }
 
 
