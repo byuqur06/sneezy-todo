@@ -15,7 +15,15 @@ from fastapi import FastAPI, APIRouter, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel
-from pymongo import ReplaceOne
+from pymongo import ReplaceOne, UpdateOne
+from pymongo.errors import DuplicateKeyError
+
+try:
+    from .product_matching import build_match_indexes, select_product_index
+    from .supplier_learning import evolve_supplier_rule, supplier_rule_decision
+except ImportError:
+    from product_matching import build_match_indexes, select_product_index
+    from supplier_learning import evolve_supplier_rule, supplier_rule_decision
 
 
 ROOT_DIR = Path(__file__).parent
@@ -269,10 +277,86 @@ async def ensure_indexes() -> None:
         await db.product_data.create_index([("search_text", "text")])
         await db.supplier_routing_rules.create_index("normalized_stock_code", unique=True)
         await db.supplier_routing_rules.create_index([("enabled", 1), ("mode", 1)])
+        await db.supplier_routing_operations.create_index("operation_id", unique=True)
+        await db.supplier_routing_events.create_index("event_id", unique=True)
+        await db.supplier_routing_events.create_index([("normalized_stock_code", 1), ("created_at", -1)])
         await db.tasks.create_index([("supplier_pending", 1), ("completed", 1)])
     except Exception:
         # Index creation should improve speed, but startup must not fail if Atlas delays it.
         pass
+
+    critical_indexes = [
+        (db.supplier_routing_rules, "normalized_stock_code", {"unique": True}),
+        (db.supplier_routing_operations, "operation_id", {"unique": True}),
+        (db.supplier_routing_events, "event_id", {"unique": True}),
+        (db.product_data, "normalized_match_values", {}),
+    ]
+    for collection, keys, options in critical_indexes:
+        try:
+            await collection.create_index(keys, **options)
+        except Exception:
+            continue
+
+
+async def migrate_legacy_fixed_rule_learning() -> None:
+    legacy_rules = await db.supplier_routing_rules.find(
+        {
+            "mode": "fixed",
+            "correction_observations": {"$exists": False},
+        },
+        {"_id": 0},
+    ).to_list(5000)
+    operations = []
+
+    for rule in legacy_rules:
+        if not rule.get("rule_id"):
+            continue
+
+        updates: Dict[str, Any] = {
+            "observations": [],
+            "correction_observations": [],
+            "learning_version": 2,
+        }
+
+        operations.append(
+            UpdateOne(
+                {"rule_id": rule.get("rule_id")},
+                {"$set": updates},
+            )
+        )
+
+    if operations:
+        await db.supplier_routing_rules.bulk_write(operations, ordered=False)
+
+    await db.supplier_routing_rules.update_many(
+        {"learning_version": {"$exists": False}},
+        {"$set": {"correction_observations": [], "learning_version": 2}},
+    )
+
+
+async def backfill_product_normalized_values() -> None:
+    query = {
+        "$or": [
+            {"normalized_match_values": {"$exists": False}},
+            {"normalized_match_values": []},
+        ]
+    }
+    projection = {"_id": 1, **{field: 1 for field in PRODUCT_MATCH_FIELDS}}
+    products = await db.product_data.find(query, projection).to_list(50000)
+
+    for batch in chunked(products, 1000):
+        operations = [
+            UpdateOne(
+                {"_id": product["_id"]},
+                {"$set": {
+                    "normalized_match_values": normalized_match_values_from_product(product),
+                }},
+            )
+            for product in batch
+            if product.get("_id") is not None
+        ]
+        if operations:
+            await db.product_data.bulk_write(operations, ordered=False)
 
 
 async def get_current_user(request: Request) -> Dict[str, Any]:
@@ -329,6 +413,8 @@ def require_admin(user: Dict[str, Any]) -> None:
 async def lifespan(app: FastAPI):
     await ensure_default_admin()
     await ensure_indexes()
+    await migrate_legacy_fixed_rule_learning()
+    await backfill_product_normalized_values()
     yield
     client.close()
 
@@ -527,6 +613,7 @@ class SupplierRoutingLearn(BaseModel):
     task_ids: List[str]
     list_id: str
     mode: Optional[str] = "learn"
+    operation_id: Optional[str] = None
 
 
 def task_doc_from_payload(payload: TaskCreate, order: int) -> Dict[str, Any]:
@@ -607,43 +694,6 @@ def supplier_routing_key(item: Dict[str, Any]) -> str:
         if normalized and normalized not in {"eslesmeyenurun", "yenigorev"}:
             return normalized
     return ""
-
-
-def supplier_rule_decision(rule: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    if not rule or not rule.get("enabled", True) or not rule.get("list_id"):
-        return None
-
-    mode = rule.get("mode") or "learned"
-    observations = rule.get("observations") or []
-    total = sum(max(0, int(item.get("count") or 0)) for item in observations)
-    selected_count = next(
-        (
-            max(0, int(item.get("count") or 0))
-            for item in observations
-            if str(item.get("list_id")) == str(rule.get("list_id"))
-        ),
-        0,
-    )
-
-    if mode != "fixed":
-        competing_count = max(
-            [
-                max(0, int(item.get("count") or 0))
-                for item in observations
-                if str(item.get("list_id")) != str(rule.get("list_id"))
-            ]
-            or [0]
-        )
-        if selected_count < 2 or selected_count <= competing_count:
-            return None
-
-    return {
-        "list_id": rule.get("list_id"),
-        "supplier_pending": False,
-        "supplier_assignment_source": "fixed" if mode == "fixed" else "learned",
-        "supplier_rule_id": rule.get("rule_id") or "",
-        "supplier_confidence": 1 if mode == "fixed" else round(selected_count / max(total, 1), 3),
-    }
 
 
 async def resolve_supplier_routing_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -1114,7 +1164,8 @@ async def delete_list(list_id: str, request: Request):
 
 @api_router.get("/supplier-routing/rules")
 async def list_supplier_routing_rules(request: Request):
-    await get_current_user(request)
+    user = await get_current_user(request)
+    require_admin(user)
     return await db.supplier_routing_rules.find(
         {},
         {"_id": 0},
@@ -1123,7 +1174,8 @@ async def list_supplier_routing_rules(request: Request):
 
 @api_router.post("/supplier-routing/rules")
 async def upsert_supplier_routing_rule(payload: SupplierRoutingRuleUpsert, request: Request):
-    await get_current_user(request)
+    user = await get_current_user(request)
+    require_admin(user)
 
     normalized = normalize_match_value(payload.stock_code)
     if not normalized:
@@ -1147,7 +1199,9 @@ async def upsert_supplier_routing_rule(payload: SupplierRoutingRuleUpsert, reque
         "list_id": payload.list_id,
         "mode": "fixed",
         "enabled": bool(payload.enabled),
-        "observations": (existing or {}).get("observations", []),
+        "observations": [],
+        "correction_observations": [],
+        "learning_version": 2,
         "created_at": (existing or {}).get("created_at", now),
         "updated_at": now,
     }
@@ -1164,7 +1218,8 @@ async def bulk_upsert_supplier_routing_rules(
     payload: SupplierRoutingBulkUpsert,
     request: Request,
 ):
-    await get_current_user(request)
+    user = await get_current_user(request)
+    require_admin(user)
 
     products = payload.products or []
     if not products:
@@ -1219,7 +1274,9 @@ async def bulk_upsert_supplier_routing_rules(
             "list_id": payload.list_id,
             "mode": "fixed",
             "enabled": True,
-            "observations": existing.get("observations", []),
+            "observations": [],
+            "correction_observations": [],
+            "learning_version": 2,
             "created_at": existing.get("created_at", now),
             "updated_at": now,
         }
@@ -1248,7 +1305,8 @@ async def update_supplier_routing_rule(
     payload: SupplierRoutingRuleUpdate,
     request: Request,
 ):
-    await get_current_user(request)
+    user = await get_current_user(request)
+    require_admin(user)
     updates = payload.model_dump(exclude_unset=True)
 
     if "list_id" in updates:
@@ -1258,6 +1316,10 @@ async def update_supplier_routing_rule(
 
     if "mode" in updates and updates["mode"] not in {"fixed", "learned"}:
         raise HTTPException(status_code=400, detail="Geçersiz kural türü")
+
+    if updates.get("mode") == "fixed" or "list_id" in updates:
+        updates["observations"] = []
+        updates["correction_observations"] = []
 
     updates["updated_at"] = now_iso()
     result = await db.supplier_routing_rules.update_one(
@@ -1272,7 +1334,8 @@ async def update_supplier_routing_rule(
 
 @api_router.delete("/supplier-routing/rules/{rule_id}")
 async def delete_supplier_routing_rule(rule_id: str, request: Request):
-    await get_current_user(request)
+    user = await get_current_user(request)
+    require_admin(user)
     result = await db.supplier_routing_rules.delete_one({"rule_id": rule_id})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Toptancı kuralı bulunamadı")
@@ -1287,102 +1350,153 @@ async def resolve_supplier_routing(payload: SupplierRoutingResolve, request: Req
 
 @api_router.post("/supplier-routing/learn")
 async def learn_supplier_routing(payload: SupplierRoutingLearn, request: Request):
-    await get_current_user(request)
+    user = await get_current_user(request)
 
     mode = str(payload.mode or "learn").lower()
     if mode not in {"temporary", "learn", "default"}:
         raise HTTPException(status_code=400, detail="Geçersiz dağıtım modu")
+    if mode == "default":
+        require_admin(user)
 
     target_list = await db.task_lists.find_one({"list_id": payload.list_id}, {"_id": 0})
     if not target_list:
         raise HTTPException(status_code=404, detail="Toptancı listesi bulunamadı")
 
     task_ids = list(dict.fromkeys(str(item) for item in (payload.task_ids or []) if item))
-    tasks = await db.tasks.find(
-        {"task_id": {"$in": task_ids}},
-        {"_id": 0},
-    ).to_list(len(task_ids))
+    if not task_ids:
+        raise HTTPException(status_code=400, detail="Taşınacak görev seçilmedi")
+    if len(task_ids) > 1000:
+        raise HTTPException(status_code=400, detail="Tek seferde en fazla 1000 görev taşınabilir")
 
-    assignment_source = "temporary" if mode == "temporary" else ("fixed" if mode == "default" else "manual")
-    await db.tasks.update_many(
-        {"task_id": {"$in": task_ids}},
-        {"$set": {
-            "list_id": payload.list_id,
-            "supplier_pending": False,
-            "supplier_assignment_source": assignment_source,
-            "updated_at": now_iso(),
-        }},
+    operation_id = clean_search(payload.operation_id, 120) or create_id("move")
+    completed_operation = await db.supplier_routing_operations.find_one(
+        {"operation_id": operation_id},
+        {"_id": 0},
+    )
+    if completed_operation:
+        return completed_operation.get("result") or {"ok": True, "learned": 0}
+
+    operation_time = now_iso()
+    assignment_source = (
+        "temporary" if mode == "temporary"
+        else "fixed" if mode == "default"
+        else "manual"
     )
 
-    if mode == "temporary":
-        return {"ok": True, "learned": 0}
-
-    unique_tasks = {}
-    for task in tasks:
-        key = supplier_routing_key(task)
-        if key and key not in unique_tasks:
-            unique_tasks[key] = task
-
-    learned = 0
-    for key, task in unique_tasks.items():
-        existing = await db.supplier_routing_rules.find_one(
-            {"normalized_stock_code": key},
+    async def apply_move_and_learning(session):
+        existing_operation = await db.supplier_routing_operations.find_one(
+            {"operation_id": operation_id},
             {"_id": 0},
+            session=session,
         )
-        now = now_iso()
-        observations = list((existing or {}).get("observations") or [])
+        if existing_operation:
+            return existing_operation.get("result") or {"ok": True, "learned": 0}
 
-        if mode == "learn":
-            found = False
-            for observation in observations:
-                if str(observation.get("list_id")) == str(payload.list_id):
-                    observation["count"] = int(observation.get("count") or 0) + 1
-                    observation["last_seen_at"] = now
-                    found = True
-                    break
-            if not found:
-                observations.append({
-                    "list_id": payload.list_id,
-                    "count": 1,
-                    "last_seen_at": now,
+        tasks = await db.tasks.find(
+            {"task_id": {"$in": task_ids}},
+            {"_id": 0},
+            session=session,
+        ).to_list(len(task_ids))
+        if len(tasks) != len(task_ids):
+            raise HTTPException(status_code=404, detail="Taşınacak görevlerden biri bulunamadı")
+
+        unique_tasks = {}
+        for task in tasks:
+            key = supplier_routing_key(task)
+            if key and key not in unique_tasks:
+                unique_tasks[key] = task
+
+        events = []
+        learned = 0
+        if mode != "temporary":
+            for key, task in unique_tasks.items():
+                existing = await db.supplier_routing_rules.find_one(
+                    {"normalized_stock_code": key},
+                    {"_id": 0},
+                    session=session,
+                )
+                evolved = evolve_supplier_rule(
+                    existing,
+                    payload.list_id,
+                    mode,
+                    operation_time,
+                )
+                doc = {
+                    "rule_id": (existing or {}).get("rule_id", create_id("route")),
+                    "stock_code": task.get("stock_code") or task.get("match_code") or task.get("title") or "",
+                    "normalized_stock_code": key,
+                    "product_name": task.get("product_name") or (existing or {}).get("product_name", ""),
+                    "image_url": task.get("image_url") or (existing or {}).get("image_url", ""),
+                    **evolved,
+                    "enabled": True,
+                    "learning_version": 2,
+                    "created_at": (existing or {}).get("created_at", operation_time),
+                    "updated_at": operation_time,
+                }
+                await db.supplier_routing_rules.replace_one(
+                    {"normalized_stock_code": key},
+                    doc.copy(),
+                    upsert=True,
+                    session=session,
+                )
+                learned += 1
+                events.append({
+                    "event_id": f"{operation_id}:{key}",
+                    "operation_id": operation_id,
+                    "normalized_stock_code": key,
+                    "stock_code": doc.get("stock_code", ""),
+                    "from_list_id": task.get("list_id"),
+                    "to_list_id": payload.list_id,
+                    "mode": mode,
+                    "user_id": user.get("user_id"),
+                    "created_at": operation_time,
                 })
 
-        ranked = sorted(
-            observations,
-            key=lambda item: int(item.get("count") or 0),
-            reverse=True,
+        await db.tasks.update_many(
+            {"task_id": {"$in": task_ids}},
+            {"$set": {
+                "list_id": payload.list_id,
+                "supplier_pending": False,
+                "supplier_assignment_source": assignment_source,
+                "updated_at": operation_time,
+            }},
+            session=session,
         )
-        keep_fixed = mode == "learn" and (existing or {}).get("mode") == "fixed"
-        selected_list_id = (
-            (existing or {}).get("list_id")
-            if keep_fixed
-            else payload.list_id
-            if mode == "default"
-            else ranked[0].get("list_id")
-            if ranked
-            else payload.list_id
-        )
-        doc = {
-            "rule_id": (existing or {}).get("rule_id", create_id("route")),
-            "stock_code": task.get("stock_code") or task.get("match_code") or task.get("title") or "",
-            "normalized_stock_code": key,
-            "product_name": task.get("product_name") or (existing or {}).get("product_name", ""),
-            "image_url": task.get("image_url") or (existing or {}).get("image_url", ""),
-            "list_id": selected_list_id,
-            "mode": "fixed" if mode == "default" or keep_fixed else "learned",
-            "enabled": True,
-            "observations": observations,
-            "created_at": (existing or {}).get("created_at", now),
-            "updated_at": now,
-        }
-        await db.supplier_routing_rules.replace_one(
-            {"normalized_stock_code": key},
-            doc.copy(),
-            upsert=True,
-        )
-        learned += 1
 
-    return {"ok": True, "learned": learned}
+        if events:
+            await db.supplier_routing_events.insert_many(
+                [event.copy() for event in events],
+                ordered=False,
+                session=session,
+            )
+
+        result = {
+            "ok": True,
+            "learned": learned,
+            "operation_id": operation_id,
+        }
+        await db.supplier_routing_operations.insert_one({
+            "operation_id": operation_id,
+            "task_ids": task_ids,
+            "list_id": payload.list_id,
+            "mode": mode,
+            "user_id": user.get("user_id"),
+            "result": result,
+            "created_at": operation_time,
+        }, session=session)
+        return result
+
+    try:
+        async with await client.start_session() as session:
+            return await session.with_transaction(apply_move_and_learning)
+    except DuplicateKeyError:
+        completed_operation = await db.supplier_routing_operations.find_one(
+            {"operation_id": operation_id},
+            {"_id": 0},
+        )
+        if completed_operation:
+            return completed_operation.get("result") or {"ok": True, "learned": 0}
+        raise
 
 
 @api_router.get("/tasks")
@@ -1642,36 +1756,12 @@ async def list_product_data(
             "normalized_stock_code",
             {"normalized_stock_code": {"$ne": ""}},
         )
-        assigned_code_set = {
-            normalize_match_value(code)
-            for code in assigned_codes
-            if normalize_match_value(code)
+        assignment_query = {
+            "normalized_match_values": {
+                "$in" if assigned else "$nin": assigned_codes,
+            }
         }
-        candidates = await db.product_data.find(
-            query,
-            PRODUCT_RESULT_PROJECTION,
-        ).sort([
-            ("stock_code", 1),
-            ("product_name", 1),
-        ]).to_list(50000)
-
-        filtered_items = []
-        for product in candidates:
-            product_codes = normalized_match_values_from_product(product)
-            product_is_assigned = any(
-                code in assigned_code_set
-                for code in product_codes
-            )
-            if product_is_assigned == assigned:
-                filtered_items.append(product)
-
-        total = len(filtered_items)
-        return {
-            "items": filtered_items[safe_skip:safe_skip + safe_limit],
-            "total": total,
-            "skip": safe_skip,
-            "limit": safe_limit,
-        }
+        query = {"$and": [query, assignment_query]} if query else assignment_query
 
     total = await db.product_data.count_documents(query)
     items = await db.product_data.find(
@@ -1817,6 +1907,7 @@ async def batch_find_product_data(payload: ProductBatchFind, request: Request):
     for item in source_items:
         values.extend([
             clean_search(item.get("stock_code")),
+            clean_search(item.get("marketplace_stock_code")),
             clean_search(item.get("barcode")),
             clean_search(item.get("variant_id")),
             clean_search(item.get("product_id")),
@@ -1835,7 +1926,9 @@ async def batch_find_product_data(payload: ProductBatchFind, request: Request):
         if not query:
             continue
 
-        batch_limit = min(len(value_batch) * 3, 3000)
+        # Shared product IDs can point to many variants. Fetch enough candidates
+        # to detect ambiguity instead of accepting whichever Mongo returns first.
+        batch_limit = min(max(len(value_batch) * 20, 1000), 20000)
         batch_products = await db.product_data.find(
             query,
             PRODUCT_RESULT_PROJECTION,
@@ -1843,52 +1936,14 @@ async def batch_find_product_data(payload: ProductBatchFind, request: Request):
 
         products.extend(batch_products)
 
-    lookup: Dict[str, Dict[str, Any]] = {}
-    normalized_lookup: Dict[str, Dict[str, Any]] = {}
-
-    for product in products:
-        for field in [
-            "stock_code",
-            "marketplace_stock_code",
-            "barcode",
-            "variant_id",
-            "product_id",
-            "main_stock_code",
-        ]:
-            value = clean_search(product.get(field))
-            if value and value not in lookup:
-                lookup[value] = product
-
-            normalized_value = normalize_match_value(product.get(field))
-            if normalized_value and normalized_value not in normalized_lookup:
-                normalized_lookup[normalized_value] = product
-
-        for normalized_value in product.get("normalized_match_values") or []:
-            normalized_value = normalize_match_value(normalized_value)
-            if normalized_value and normalized_value not in normalized_lookup:
-                normalized_lookup[normalized_value] = product
+    match_indexes = build_match_indexes(products)
 
     result: Dict[str, Any] = {}
 
     for item in source_items:
         key = clean_search(item.get("key"))
-        search_values = [
-            clean_search(item.get("stock_code")),
-            clean_search(item.get("barcode")),
-            clean_search(item.get("variant_id")),
-            clean_search(item.get("product_id")),
-        ]
-        product = None
-
-        for value in search_values:
-            if value and value in lookup:
-                product = lookup[value]
-                break
-
-            normalized_value = normalize_match_value(value)
-            if normalized_value and normalized_value in normalized_lookup:
-                product = normalized_lookup[normalized_value]
-                break
+        product_index = select_product_index(item, match_indexes)
+        product = products[product_index] if product_index is not None else None
 
         if key:
             result[key] = product
