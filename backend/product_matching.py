@@ -53,13 +53,23 @@ def select_product_index(
         candidates = indexes["marketplace_stock_code"].get(value, set())
         return next(iter(candidates)) if len(candidates) == 1 else None
 
+    stock_value = normalize_identifier(item.get("stock_code"))
+    stock_candidates: Set[int] = set()
+    if stock_value:
+        for field in ("stock_code", "marketplace_stock_code"):
+            stock_candidates.update(indexes[field].get(stock_value, set()))
+
+        # A supplied order stock code is authoritative. Marketplace product and
+        # variant IDs are not stable enough to replace a missing stock match.
+        if not stock_candidates:
+            return None
+
     criteria = (
-        (item.get("stock_code"), ("stock_code", "marketplace_stock_code")),
         (item.get("barcode"), ("barcode",)),
         (item.get("variant_id"), ("variant_id",)),
         (item.get("product_id"), ("product_id",)),
     )
-    candidate_sets: List[Set[int]] = []
+    candidate_sets: List[Set[int]] = [stock_candidates] if stock_candidates else []
 
     for raw_value, fields in criteria:
         value = normalize_identifier(raw_value)

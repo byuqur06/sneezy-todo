@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Optional, List, Any, Dict
 import base64
 import hashlib
+import logging
 import os
 import re
 import secrets
@@ -19,9 +20,11 @@ from pymongo import ReplaceOne, UpdateOne
 from pymongo.errors import DuplicateKeyError
 
 try:
+    from .barcodes import BarcodeStore, create_barcode_router
     from .product_matching import build_match_indexes, select_product_index
     from .supplier_learning import evolve_supplier_rule, supplier_rule_decision
 except ImportError:
+    from barcodes import BarcodeStore, create_barcode_router
     from product_matching import build_match_indexes, select_product_index
     from supplier_learning import evolve_supplier_rule, supplier_rule_decision
 
@@ -39,6 +42,7 @@ if not MONGO_URL:
 
 client = AsyncIOMotorClient(MONGO_URL)
 db = client[DB_NAME]
+barcode_store = BarcodeStore(db)
 
 
 def now_iso() -> str:
@@ -188,6 +192,7 @@ def public_user(user: Dict[str, Any]) -> Dict[str, Any]:
         "username": user.get("username", ""),
         "role": normalize_role(user.get("role")),
         "active": user.get("active", True),
+        "barcode_access": bool(user.get("barcode_access", False)),
         "created_at": user.get("created_at"),
         "updated_at": user.get("updated_at"),
     }
@@ -415,6 +420,10 @@ async def lifespan(app: FastAPI):
     await ensure_indexes()
     await migrate_legacy_fixed_rule_learning()
     await backfill_product_normalized_values()
+    try:
+        await barcode_store.initialize(ROOT_DIR / "barcode_logs")
+    except Exception:
+        logging.exception("Barcode module disabled: legacy logs or barcode database could not be initialized")
     yield
     client.close()
 
@@ -449,6 +458,7 @@ class UserCreate(BaseModel):
     password: str
     role: str = "staff"
     active: bool = True
+    barcode_access: bool = False
 
 
 class UserUpdate(BaseModel):
@@ -457,6 +467,7 @@ class UserUpdate(BaseModel):
     password: Optional[str] = None
     role: Optional[str] = None
     active: Optional[bool] = None
+    barcode_access: Optional[bool] = None
 
 
 class TaskListCreate(BaseModel):
@@ -962,6 +973,7 @@ async def create_user(payload: UserCreate, request: Request):
         "username": username,
         "role": normalize_role(payload.role),
         "active": payload.active,
+        "barcode_access": payload.barcode_access,
         **password_data,
         "created_at": now_iso(),
         "updated_at": now_iso(),
@@ -1021,6 +1033,9 @@ async def update_user(user_id: str, payload: UserUpdate, request: Request):
 
     if payload.password:
         updates.update(hash_password(payload.password.strip()))
+
+    if payload.barcode_access is not None:
+        updates["barcode_access"] = payload.barcode_access
 
     if not updates:
         raise HTTPException(status_code=400, detail="Güncellenecek alan yok")
@@ -1967,3 +1982,4 @@ async def delete_product_data(request: Request):
 
 
 app.include_router(api_router)
+app.include_router(create_barcode_router(db, get_current_user, barcode_store))
